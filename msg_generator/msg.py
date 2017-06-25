@@ -34,13 +34,12 @@ class MsgGenerator(threading.Thread):
             self.start_ts = float(self.start_ts)
 
     def run(self):
-        gen_name = self.app.rdb.get("generator").decode("utf-8")
-        if gen_name != self.app.name:
-            return
+        self.app.rdb.set("gen", "working")
         last_message = self.app.rdb.get("last_message")
         cur_msg_number = 1
         if last_message:
-            (last_number, last_cur_ts) = str(last_message).split(":")
+            last_message = last_message.decode("utf-8")
+            (last_number, last_cur_ts) = last_message.split(":")
             cur_msg_number = int(last_number)
         cur_ts = time.time()
         # проверяем, установлено ли время начала генерации сообщений
@@ -49,6 +48,9 @@ class MsgGenerator(threading.Thread):
             self.start_ts = cur_ts
             self.app.rdb.set("start", self.start_ts)
         for i in range(cur_msg_number, self.app.msg_count + 1):
+            gen_name = self.app.rdb.get("generator").decode("utf-8")
+            if gen_name != self.app.name:
+                return
             msg_info = "{number}:{timestamp}".format(
                             number=i, timestamp=cur_ts)
             self.app.rdb.set("last_message", msg_info)
@@ -67,6 +69,15 @@ class MsgAcceptor(threading.Thread):
         threading.Thread.__init__(self)
         self.app = app
 
+    def process(self, text):
+        st = time.time()
+        parts = text.split("-")
+        if int(parts[1]) <= 5:
+            self.app.rdb.rpush("errors", text)
+        else:
+            time.sleep(self.app.interval)
+        return time.time() - st
+
     def run(self):
         st = self.app.rdb.get("start")
         if not st:
@@ -78,13 +89,23 @@ class MsgAcceptor(threading.Thread):
             last_message = last_message.decode("utf-8")
             st = float(self.app.rdb.get("start"))
             (last_number, last_cur_ts) = last_message.split(":")
+            if last_number == "-1":
+                break
             expected_ts = st + (int(last_number) - 1) * self.app.interval
-            if time.time() - expected_ts > self.app.max_interval:
+            delta = time.time() - expected_ts
+            if delta > self.app.max_interval:
                 self.app.run_generator()
-            msg = self.app.rdb.blpop("queue")
-            print("The app: {name}. Accepted: {msg}".format(
-                        name=self.app.name,
-                        msg=msg[1].decode("utf-8")))
+            msg = self.app.rdb.blpop("queue", 1)
+            if not msg:
+                continue
+            (index, text) = msg[1].decode("utf-8").split(":")
+            duration = self.process(text)
+            print("The app: {name}. Index: {ix}. Accepted: {msg}. "
+                  "Process Duration: {dur}.".format(
+                        name=self.app.name, ix=index,
+                        msg=text, dur=duration))
+            if int(index) == self.app.msg_count:
+                self.app.rdb.set("last_message", "-1:-1")
 
 
 class App(object):
@@ -96,7 +117,6 @@ class App(object):
         self.rdb = redis.Redis(host=rhost, port=rport)
         self.signal_handlers = {
             signal.SIGINT: None,
-            # signal.SIGKILL: None,
             signal.SIGQUIT: None,
             signal.SIGTERM: None,
             signal.SIGTSTP: None
@@ -132,7 +152,7 @@ class App(object):
         if not status:
             status = "unknown"
         else:
-            status = str(status)
+            status = status.decode("utf-8")
         if status in ["unknown", "working"]:
             self.rdb.set("gen", "starting")
         else:
@@ -146,18 +166,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
                 description="Тестовое задание в OneTwoTrip.")
     parser.add_argument("-c", "--command",
-                        default="handle",
+                        default="handle", type=str,
                         choices=["handle", "getErrors", "clean"],
                         help="Обработать сообщение.")
-    parser.add_argument("-i", "--interval", default=500,
+    parser.add_argument("-i", "--interval", default=500, type=int,
                         help="Интервал между сообщениями (мс).")
-    parser.add_argument("-m", "--max-interval", default=900,
+    parser.add_argument("-m", "--max-interval", default=900, type=int,
                         help="Maксимальный интервал между сообщениями (мс).")
-    parser.add_argument("-n", "--number", default=100,
+    parser.add_argument("-n", "--number", default=100, type=int,
                         help="Количество генерируемых сообщений.")
-    parser.add_argument("-t", "--host", default="localhost",
+    parser.add_argument("-t", "--host", default="localhost", type=str,
                         help="Имя хоста с redis.")
-    parser.add_argument("-p", "--port", default=6379,
+    parser.add_argument("-p", "--port", default=6379, type=str,
                         help="Порт, на котором redis принимает соединения.")
     args = parser.parse_args()
 
@@ -165,7 +185,17 @@ if __name__ == "__main__":
         app = App(args.interval/1000, args.max_interval/1000,
                   args.number, args.host, args.port)
     elif args.command == "getErrors":
-        print("It's need to show errors.")
+        rdb = redis.Redis(host=args.host, port=args.port)
+        nerrors = rdb.llen("errors")
+        i = 1
+        while nerrors:
+            message = rdb.lpop("errors")
+            if message:
+                message = message.decode("utf-8")
+            print("{number}. Message with error: {msg}".format(number=i,
+                                                               msg=message))
+            nerrors -= 1
+            i += 1
     elif args.command == "clean":
         rdb = redis.Redis(host=args.host, port=args.port)
         rdb.delete("gen")
