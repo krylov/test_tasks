@@ -30,14 +30,11 @@ class MsgGenerator(threading.Thread):
     def __init__(self, app):
         threading.Thread.__init__(self)
         self.app = app
-        self.start_ts = self.app.rdb.get("start")
-        if self.start_ts:
-            self.start_ts = float(self.start_ts.decode("utf-8"))
+        self.start_ts = self.app.redis_value("start", float, 0.0)
         self.gen_lock = self.app.rdb.lock("gen_lock", 1)
         self.cur_msg_number = 1
-        last_message = self.app.rdb.get("last_message")
+        last_message = self.app.redis_value("last_message", str, "")
         if last_message:
-            last_message = last_message.decode("utf-8")
             (last_number, last_cur_ts) = last_message.split(":")
             self.cur_msg_number = int(last_number)
 
@@ -50,10 +47,7 @@ class MsgGenerator(threading.Thread):
                 if not self.start_ts:
                     self.start_ts = cur_ts
                     self.app.rdb.set("start", self.start_ts)
-                logging.debug("Message TimeStamp. Number: {n}. TS: {t}.".format(
-                                n=i, t=self.start_ts + self.app.interval * i))
-                st_iter_time = time.time()
-                gen_name = self.app.rdb.get("generator").decode("utf-8")
+                gen_name = self.app.redis_value("generator", str, "")
                 if gen_name != self.app.name:
                     return
                 msg_info = "{number}:{timestamp}".format(
@@ -65,12 +59,8 @@ class MsgGenerator(threading.Thread):
                       "Generated: {msg}".format(
                         name=self.app.name, ts=cur_ts, msg=msg))
                 delay = self.start_ts + self.app.interval * i - cur_ts
-                logging.debug("Generator. Number: {n}. Delay: {d}.".format(
-                                n=i, d=delay))
                 if delay > 0.0:
                     time.sleep(delay)
-                logging.debug("Generator. Iteration Time: {}".format(
-                                time.time() - st_iter_time))
         self.app.rdb.set("last_message", "{n}:".format(n=self.app.msg_count+1))
 
 
@@ -101,36 +91,31 @@ class MsgAcceptor(threading.Thread):
                         accept_ts = time.time()
                         (index, text) = msg[1].decode("utf-8").split(":")
                         duration = self.process(text)
-                        print("The app: {name}. Index: {ix}. Accepted: {msg}. "
-                              "Time: {ts}. Process Duration: {dur}.".format(
+                        print("The app: {name}. Index: {ix}. "
+                              "Accepted: {msg}. Time (ms): {ts}. "
+                              "Process Duration (ms): {dur}.".format(
                                     name=self.app.name, ix=index, ts=accept_ts,
                                     msg=text, dur=duration))
-                    last_message = self.app.rdb.get("last_message")
+                    last_message = self.app.redis_value("last_message", str, "")
                     process_time = 0
-                    st = self.app.rdb.get("start")
+                    st = self.app.redis_value("start", float, 0.0)
                     if not st:
                         continue
-                    st = float(st.decode("utf-8"))
                     if last_message:
-                        last_message = last_message.decode("utf-8")
                         (last_number, last_cur_ts) = last_message.split(":")
                         last_number = int(last_number)
                         if last_number == self.app.msg_count + 1:
                             if msg:
-                                print("Last Number!")
                                 continue
                             else:
-                                print("No Message.")
                                 break
                         process_time = (last_number - 1) * self.app.interval
                     expected_ts = st + process_time
                     delta = time.time() - expected_ts
-                    logging.debug("Delta: {d}. Max Interval: {m}.".format(
-                                        d=delta, m=self.app.max_interval))
                     if delta > self.app.max_interval:
                         self.app.run_generator()
-            except Exception as exc:
-                print("Exception: {}".format(exc))
+            except redis.exceptions.LockError as exc:
+                print("Redis Exception: {}".format(exc))
 
 
 class App(object):
@@ -151,6 +136,12 @@ class App(object):
         self.acceptor = MsgAcceptor(self)
         self.acceptor.start()
         print("The '{name}' app started.".format(name=self.name))
+
+    def redis_value(self, name, type_name, default):
+        b_value = self.rdb.get(name)
+        if not b_value:
+            return default
+        return type_name(b_value.decode("utf-8"))
 
     def disable_completion(self):
         for s in self.signal_handlers:
@@ -176,19 +167,12 @@ class App(object):
     def run_generator(self):
         try:
             with self.gen_lock:
-                st = time.time()
-                logging.debug("Acceptor. Start Gen Lock: {t}".format(t=st))
-                gen_name = self.rdb.get("generator")
-                if gen_name:
-                    gen_name = gen_name.decode("utf-8")
-                else:
+                gen_name = self.redis_value("generator", str, "")
+                if not gen_name:
                     self.rdb.set("generator", self.name)
                 if self.name == gen_name:
                     return
                 self.rdb.set("generator", self.name)
-                logging.debug("Acceptor. End Gen Lock. "
-                              "Duration: {dur}".format(
-                                dur=time.time()-st))
         except redis.exceptions.LockError as exc:
             print("Redis Exception: {}".format(exc))
             return
@@ -241,6 +225,7 @@ def main():
         rdb.delete("start")
         rdb.delete("gen_lock")
         rdb.delete("accept_lock")
+        rdb.delete("errors")
 
 
 if __name__ == "__main__":
