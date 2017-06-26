@@ -32,11 +32,7 @@ class MsgGenerator(threading.Thread):
         self.app = app
         self.start_ts = self.app.redis_value("start", float, 0.0)
         self.gen_lock = self.app.rdb.lock("gen_lock", 1)
-        self.cur_msg_number = 1
-        last_message = self.app.redis_value("last_message", str, "")
-        if last_message:
-            (last_number, last_cur_ts) = last_message.split(":")
-            self.cur_msg_number = int(last_number)
+        self.cur_msg_number = self.app.redis_value("last_index", int, 1)
 
     def run(self):
         if self.cur_msg_number == self.app.msg_count + 1:
@@ -50,9 +46,7 @@ class MsgGenerator(threading.Thread):
                 gen_name = self.app.redis_value("generator", str, "")
                 if gen_name != self.app.name:
                     return
-                msg_info = "{number}:{timestamp}".format(
-                                number=i, timestamp=cur_ts)
-                self.app.rdb.set("last_message", msg_info)
+                self.app.rdb.set("last_index", i)
                 msg = generate_message(i)
                 self.app.rdb.rpush("queue", msg)
                 print("The generator: {name}. Time: {ts}. "
@@ -61,7 +55,7 @@ class MsgGenerator(threading.Thread):
                 delay = self.start_ts + self.app.interval * i - cur_ts
                 if delay > 0.0:
                     time.sleep(delay)
-        self.app.rdb.set("last_message", "{n}:".format(n=self.app.msg_count+1))
+        self.app.rdb.set("last_index", self.app.msg_count+1)
 
 
 class MsgAcceptor(threading.Thread):
@@ -96,20 +90,18 @@ class MsgAcceptor(threading.Thread):
                               "Process Duration (ms): {dur}.".format(
                                     name=self.app.name, ix=index, ts=accept_ts,
                                     msg=text, dur=duration))
-                    last_message = self.app.redis_value("last_message", str, "")
-                    process_time = 0
                     st = self.app.redis_value("start", float, 0.0)
                     if not st:
                         continue
-                    if last_message:
-                        (last_number, last_cur_ts) = last_message.split(":")
-                        last_number = int(last_number)
-                        if last_number == self.app.msg_count + 1:
+                    process_time = 0
+                    last_index = self.app.redis_value("last_index", int, 0)
+                    if last_index:
+                        if last_index == self.app.msg_count + 1:
                             if msg:
                                 continue
                             else:
                                 break
-                        process_time = (last_number - 1) * self.app.interval
+                        process_time = (last_index - 1) * self.app.interval
                     expected_ts = st + process_time
                     delta = time.time() - expected_ts
                     if delta > self.app.max_interval:
@@ -152,17 +144,6 @@ class App(object):
             if not self.signal_handlers[s]:
                 signal.signal(s, self.signal_handlers[s])
                 self.signal_handlers[s] = None
-
-    def get_last_message(self):
-        lst = self.app.rdb.lrange("queue", -1, -1)
-        if not lst:
-            return {}
-        parts = str(lst[0]).split(":")
-        msg = {}
-        msg["timestamp"] = float(parts[0])
-        msg["index"] = int(parts[1])
-        msg["text"] = str(parts[2])
-        return msg
 
     def run_generator(self):
         try:
@@ -221,7 +202,7 @@ def main():
         rdb = redis.Redis(host=args.host, port=args.port)
         rdb.delete("generator")
         rdb.delete("queue")
-        rdb.delete("last_message")
+        rdb.delete("last_index")
         rdb.delete("start")
         rdb.delete("gen_lock")
         rdb.delete("accept_lock")
