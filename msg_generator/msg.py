@@ -81,15 +81,6 @@ class MsgAcceptor(threading.Thread):
                     if not st:
                         self.app.run_generator()
                     msg = self.app.rdb.blpop("queue", 1)
-                    if msg:
-                        accept_ts = time.time()
-                        (index, text) = msg[1].decode("utf-8").split(":")
-                        duration = self.process(text)
-                        print("The app: {name}. Index: {ix}. "
-                              "Accepted: {msg}. Time (ms): {ts}. "
-                              "Process Duration (ms): {dur}.".format(
-                                    name=self.app.name, ix=index, ts=accept_ts,
-                                    msg=text, dur=duration))
                     st = self.app.redis_value("start", float, 0.0)
                     if not st:
                         continue
@@ -97,9 +88,7 @@ class MsgAcceptor(threading.Thread):
                     last_index = self.app.redis_value("last_index", int, 0)
                     if last_index:
                         if last_index == self.app.msg_count + 1:
-                            if msg:
-                                continue
-                            else:
+                            if not msg:
                                 break
                         process_time = (last_index - 1) * self.app.interval
                     expected_ts = st + process_time
@@ -108,6 +97,15 @@ class MsgAcceptor(threading.Thread):
                         self.app.run_generator()
             except redis.exceptions.LockError as exc:
                 print("Redis Exception: {}".format(exc))
+            if msg:
+                accept_ts = time.time()
+                (index, text) = msg[1].decode("utf-8").split(":")
+                duration = self.process(text)
+                print("The app: {name}. Index: {ix}. "
+                      "Accepted: {msg}. Time (ms): {ts}. "
+                      "Process Duration (ms): {dur}.".format(
+                            name=self.app.name, ix=index, ts=accept_ts,
+                            msg=text, dur=duration))
 
 
 class App(object):
