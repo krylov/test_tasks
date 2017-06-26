@@ -8,6 +8,7 @@ import threading
 import time
 import signal
 from random import randrange
+import logging
 
 
 def completion_handler(signum, frame):
@@ -22,7 +23,7 @@ def generate_message(number):
 def generate_appname():
     from socket import gethostname
     from os import getpid
-    return "{host}#{pid}".format(host=gethostname(), pid=getpid())
+    return "{host}-{pid}".format(host=gethostname(), pid=getpid())
 
 
 class MsgGenerator(threading.Thread):
@@ -31,43 +32,53 @@ class MsgGenerator(threading.Thread):
         self.app = app
         self.start_ts = self.app.rdb.get("start")
         if self.start_ts:
-            self.start_ts = float(self.start_ts)
-
-    def run(self):
-        self.app.rdb.set("gen", "working")
+            self.start_ts = float(self.start_ts.decode("utf-8"))
+        self.gen_lock = self.app.rdb.lock("gen_lock", 1)
+        self.cur_msg_number = 1
         last_message = self.app.rdb.get("last_message")
-        cur_msg_number = 1
         if last_message:
             last_message = last_message.decode("utf-8")
             (last_number, last_cur_ts) = last_message.split(":")
-            cur_msg_number = int(last_number)
-        cur_ts = time.time()
-        # проверяем, установлено ли время начала генерации сообщений
-        # если нет, устанавливаем
-        if not self.start_ts:
-            self.start_ts = cur_ts
-            self.app.rdb.set("start", self.start_ts)
-        for i in range(cur_msg_number, self.app.msg_count + 1):
-            gen_name = self.app.rdb.get("generator").decode("utf-8")
-            if gen_name != self.app.name:
-                return
-            msg_info = "{number}:{timestamp}".format(
-                            number=i, timestamp=cur_ts)
-            self.app.rdb.set("last_message", msg_info)
-            msg = generate_message(i)
-            self.app.rdb.rpush("queue", msg)
-            print("The generator: {name}. Time: {ts}. Generated: {msg}".format(
-                    name=self.app.name, ts=cur_ts, msg=msg))
-            delay = self.start_ts + self.app.interval * i - cur_ts
-            if delay > 0.0:
-                time.sleep(delay)
-            cur_ts = time.time()
+            self.cur_msg_number = int(last_number)
+
+    def run(self):
+        if self.cur_msg_number == self.app.msg_count + 1:
+            return
+        for i in range(self.cur_msg_number, self.app.msg_count + 1):
+            with self.gen_lock:
+                cur_ts = time.time()
+                if not self.start_ts:
+                    self.start_ts = cur_ts
+                    self.app.rdb.set("start", self.start_ts)
+                logging.debug("Message TimeStamp. Number: {n}. TS: {t}.".format(
+                                n=i, t=self.start_ts + self.app.interval * i))
+                st_iter_time = time.time()
+                gen_name = self.app.rdb.get("generator").decode("utf-8")
+                if gen_name != self.app.name:
+                    return
+                msg_info = "{number}:{timestamp}".format(
+                                number=i, timestamp=cur_ts)
+                self.app.rdb.set("last_message", msg_info)
+                msg = generate_message(i)
+                self.app.rdb.rpush("queue", msg)
+                print("The generator: {name}. Time: {ts}. "
+                      "Generated: {msg}".format(
+                        name=self.app.name, ts=cur_ts, msg=msg))
+                delay = self.start_ts + self.app.interval * i - cur_ts
+                logging.debug("Generator. Number: {n}. Delay: {d}.".format(
+                                n=i, d=delay))
+                if delay > 0.0:
+                    time.sleep(delay)
+                logging.debug("Generator. Iteration Time: {}".format(
+                                time.time() - st_iter_time))
+        self.app.rdb.set("last_message", "{n}:".format(n=self.app.msg_count+1))
 
 
 class MsgAcceptor(threading.Thread):
     def __init__(self, app):
         threading.Thread.__init__(self)
         self.app = app
+        self.accept_lock = self.app.rdb.lock("accept_lock", 2)
 
     def process(self, text):
         st = time.time()
@@ -79,33 +90,47 @@ class MsgAcceptor(threading.Thread):
         return time.time() - st
 
     def run(self):
-        st = self.app.rdb.get("start")
-        if not st:
-            self.app.run_generator()
         while True:
-            last_message = self.app.rdb.get("last_message")
-            if not last_message:
-                continue
-            last_message = last_message.decode("utf-8")
-            st = float(self.app.rdb.get("start"))
-            (last_number, last_cur_ts) = last_message.split(":")
-            if last_number == "-1":
-                break
-            expected_ts = st + (int(last_number) - 1) * self.app.interval
-            delta = time.time() - expected_ts
-            if delta > self.app.max_interval:
-                self.app.run_generator()
-            msg = self.app.rdb.blpop("queue", 1)
-            if not msg:
-                continue
-            (index, text) = msg[1].decode("utf-8").split(":")
-            duration = self.process(text)
-            print("The app: {name}. Index: {ix}. Accepted: {msg}. "
-                  "Process Duration: {dur}.".format(
-                        name=self.app.name, ix=index,
-                        msg=text, dur=duration))
-            if int(index) == self.app.msg_count:
-                self.app.rdb.set("last_message", "-1:-1")
+            try:
+                with self.accept_lock:
+                    st = self.app.rdb.get("start")
+                    if not st:
+                        self.app.run_generator()
+                    msg = self.app.rdb.blpop("queue", 1)
+                    if msg:
+                        accept_ts = time.time()
+                        (index, text) = msg[1].decode("utf-8").split(":")
+                        duration = self.process(text)
+                        print("The app: {name}. Index: {ix}. Accepted: {msg}. "
+                              "Time: {ts}. Process Duration: {dur}.".format(
+                                    name=self.app.name, ix=index, ts=accept_ts,
+                                    msg=text, dur=duration))
+                    last_message = self.app.rdb.get("last_message")
+                    process_time = 0
+                    st = self.app.rdb.get("start")
+                    if not st:
+                        continue
+                    st = float(st.decode("utf-8"))
+                    if last_message:
+                        last_message = last_message.decode("utf-8")
+                        (last_number, last_cur_ts) = last_message.split(":")
+                        last_number = int(last_number)
+                        if last_number == self.app.msg_count + 1:
+                            if msg:
+                                print("Last Number!")
+                                continue
+                            else:
+                                print("No Message.")
+                                break
+                        process_time = (last_number - 1) * self.app.interval
+                    expected_ts = st + process_time
+                    delta = time.time() - expected_ts
+                    logging.debug("Delta: {d}. Max Interval: {m}.".format(
+                                        d=delta, m=self.app.max_interval))
+                    if delta > self.app.max_interval:
+                        self.app.run_generator()
+            except Exception as exc:
+                print("Exception: {}".format(exc))
 
 
 class App(object):
@@ -122,6 +147,7 @@ class App(object):
             signal.SIGTSTP: None
         }
         self.disable_completion()
+        self.gen_lock = self.rdb.lock("gen_lock", 1)
         self.acceptor = MsgAcceptor(self)
         self.acceptor.start()
         print("The '{name}' app started.".format(name=self.name))
@@ -148,21 +174,32 @@ class App(object):
         return msg
 
     def run_generator(self):
-        status = self.rdb.get("gen")
-        if not status:
-            status = "unknown"
-        else:
-            status = status.decode("utf-8")
-        if status in ["unknown", "working"]:
-            self.rdb.set("gen", "starting")
-        else:
+        try:
+            with self.gen_lock:
+                st = time.time()
+                logging.debug("Acceptor. Start Gen Lock: {t}".format(t=st))
+                gen_name = self.rdb.get("generator")
+                if gen_name:
+                    gen_name = gen_name.decode("utf-8")
+                else:
+                    self.rdb.set("generator", self.name)
+                if self.name == gen_name:
+                    return
+                self.rdb.set("generator", self.name)
+                logging.debug("Acceptor. End Gen Lock. "
+                              "Duration: {dur}".format(
+                                dur=time.time()-st))
+        except redis.exceptions.LockError as exc:
+            print("Redis Exception: {}".format(exc))
             return
-        self.rdb.set("generator", self.name)
         gen = MsgGenerator(self)
         gen.start()
 
 
-if __name__ == "__main__":
+def main():
+    logging.basicConfig(
+        filename="/tmp/msg_gen.{}.log".format(generate_appname()),
+        level=logging.DEBUG)
     parser = argparse.ArgumentParser(
                 description="Тестовое задание в OneTwoTrip.")
     parser.add_argument("-c", "--command",
@@ -182,8 +219,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.command == "handle":
-        app = App(args.interval/1000, args.max_interval/1000,
-                  args.number, args.host, args.port)
+        App(args.interval/1000, args.max_interval/1000,
+            args.number, args.host, args.port)
     elif args.command == "getErrors":
         rdb = redis.Redis(host=args.host, port=args.port)
         nerrors = rdb.llen("errors")
@@ -198,8 +235,13 @@ if __name__ == "__main__":
             i += 1
     elif args.command == "clean":
         rdb = redis.Redis(host=args.host, port=args.port)
-        rdb.delete("gen")
         rdb.delete("generator")
         rdb.delete("queue")
         rdb.delete("last_message")
         rdb.delete("start")
+        rdb.delete("gen_lock")
+        rdb.delete("accept_lock")
+
+
+if __name__ == "__main__":
+    main()
