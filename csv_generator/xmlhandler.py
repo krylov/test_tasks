@@ -33,14 +33,13 @@ class XmlHandler(xml.sax.ContentHandler):
         self.object_names = []
 
     def endDocument(self):
-        line_items = []
-        for name in self.var_names:
-            line_items.append(self.var_values[name])
-        self.levels_file.write("{}\n".format(";".join(line_items)))
+        self.levels_file.write('"{i}",{level}\n'.format(
+                                    i=self.var_values["id"],
+                                    level=self.var_values["level"]))
         for name in self.object_names:
             self.objects_file.write(
-                "{i};{name}\n".format(i=self.var_values["id"],
-                                      name=name))
+                '"{i}","{name}"\n'.format(i=self.var_values["id"],
+                                          name=name))
 
     def startElement(self, name, attrs):
         if name == "var":
