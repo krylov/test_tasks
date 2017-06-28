@@ -20,9 +20,10 @@ def main():
                         help="Путь к каталогу, в котором будут генерироваться "
                              "и архивироваться xml-файлы.")
     parser.add_argument("-a", "--archcount", type=int, default=50,
-                        help="Количество zip-архивов.")
+                        help="Количество zip-архивов. По умолчанию: 50.")
     parser.add_argument("-x", "--xmlcount", type=int, default=100,
-                        help="Количество xml-файлов в архиве.")
+                        help="Количество xml-файлов в архиве. "
+                             "По умолчанию: 100.")
     args = parser.parse_args()
 
     if args.command == "zip":
