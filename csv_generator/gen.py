@@ -106,6 +106,7 @@ class CsvGen(object):
                 with open(fpath, "r") as f:
                     csv_file.write(f.read())
                 os.unlink(fpath)
+        print("The {} file was created.".format(csv_fpath))
 
     def gen_csv_files(self):
         for root, dirnames, filenames in os.walk(self.arch_path):
