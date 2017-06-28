@@ -1,5 +1,6 @@
-#!/usr/bin/python
-# -*- coding: utf-8 -*-
+'''
+Модуль содержит для обработки xml-файла.
+'''
 
 
 import xml.sax
@@ -10,7 +11,16 @@ class RequiredAttrError(Exception):
 
 
 class XmlHandler(xml.sax.ContentHandler):
+    '''
+    Выполняет парсинг xml-файла для сохранения в указанный
+    файл необходимых значений в csv-формате.
+    '''
+
     def __init__(self, levels_file, objects_file):
+        '''
+        :param levels_file: файловый объект для сохранения значений levels
+        :param objects_file: файловый объект для сохранения значений objects
+        '''
         xml.sax.ContentHandler.__init__(self)
         self.levels_file = levels_file
         self.objects_file = objects_file

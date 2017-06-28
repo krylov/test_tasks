@@ -1,3 +1,9 @@
+'''
+Модуль содержит классы для генерации xml-файлов с последующим архивированием и
+генерации csv-файлов.
+'''
+
+
 import os
 import zipfile
 import multiprocessing
@@ -15,16 +21,31 @@ def wait_for_proc_end(proc):
 
 
 class ArchGen(object):
+    '''
+    Класс для создания zip-архивов сгенерированных xml-файлов.
+    '''
 
     arch_templ_name = "a_{n}.zip"
     xml_templ_name = "t_{n}.xml"
 
     def __init__(self, path, arch_count, xml_count):
+        '''
+        :param path: путь к каталогу, где генерируются xml-файлы и
+                     создаются архивы
+        :param arch_count: количество создаваемых архивов
+        :param xml_count: количество сгенерированных xml-файлов
+                          в архиве
+        '''
         self.arch_path = path
         self.arch_count = arch_count
         self.xml_count = xml_count
 
     def make_zip(self, zip_id):
+        '''
+        Создаёт zip-архив. Выполняется в отдельном процессе.
+
+        :param zip_id: номер архива, помещаемый в имя архива
+        '''
         zip_fpath = os.path.join(self.arch_path,
                                  ArchGen.arch_templ_name.format(n=zip_id))
         base_id = (zip_id - 1) * self.xml_count + 1
@@ -39,6 +60,10 @@ class ArchGen(object):
         print("The {} file was created.".format(zip_fpath))
 
     def zip_all(self):
+        '''
+        Создаёт заданное количество архивов с заданным числом
+        сгенерированнх xml-файлов.
+        '''
         proc = []
         for j in range(1, self.arch_count + 1):
             p = multiprocessing.Process(target=self.make_zip, args=(j,))
@@ -48,12 +73,21 @@ class ArchGen(object):
 
 
 class CsvGen(object):
+    '''
+    Класс для генерации csv-файлов.
+    '''
 
     def __init__(self, path):
+        '''
+        Путь к каталогу, в котором хранятся zip-архивы с xml-файлами.
+        '''
         self.arch_path = path
         self.handle_archives()
 
     def handle_archives(self):
+        '''
+        Извлекает xml-файлы из всех архивов.
+        '''
         archives = os.listdir(self.arch_path)
         proc = []
         for fname in archives:
@@ -65,12 +99,26 @@ class CsvGen(object):
         wait_for_proc_end(proc)
 
     def extract_all(self, arch_file_path):
+        '''
+        Извлекает все xml-файлы из заданного архива. Выполняется в отдельном
+        процессе.
+
+        :param arch_file_path: путь к архиву с xml-файлами.
+        '''
         extract_dir_path = "{fname}.d".format(fname=arch_file_path)
         os.mkdir(extract_dir_path)
         with zipfile.ZipFile(arch_file_path, "r") as zf:
             zf.extractall(extract_dir_path)
 
     def parse_xml_files(self, dirname):
+        '''
+        Парсит xml-файлы из заданного каталога, чтобы сгенерировать требуемые
+        csv-файлы. Выполняется в отдельном процессе. После обработки xml-файл
+        удаляется. После обработки всех xml-файлов в каталоге удаляется сам
+        каталог.
+
+        :param dirname: имя каталога, содержащего xml-файлы заданного формата.
+        '''
         dirpath = os.path.join(self.arch_path, dirname)
         for root, dirnames, filenames in os.walk(dirpath):
             break
@@ -97,6 +145,13 @@ class CsvGen(object):
                                                                     exc=exc))
 
     def join_csv_files(self, name):
+        '''
+        Объединяет csv-файлы, которые после удаляются, в один общий.
+        Выполняется в отдельном процессе.
+
+        :param name: часть имени csv-файла, по которому определяется требуемый
+                     набор данных.
+        '''
         csv_templ_name = os.path.join(self.arch_path,
                                       "{}.*.csv".format(name))
         csv_fpath = os.path.join(self.arch_path,
@@ -109,6 +164,11 @@ class CsvGen(object):
         print("The {} file was created.".format(csv_fpath))
 
     def gen_csv_files(self):
+        '''
+        Запускает обработку xml-файлов для каждого каталога с xml-файлами, а
+        затем объединяет созданные csv-файлы в два общих по виду требуемого
+        набора данных.
+        '''
         for root, dirnames, filenames in os.walk(self.arch_path):
             break
         proc = []

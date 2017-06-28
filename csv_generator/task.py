@@ -9,6 +9,15 @@ from gen import ArchGen, CsvGen
 
 
 def main():
+    '''
+    Сначала должно выполняться архивирование:
+    >>> ./task.py -p /tmp/somedir -c zip
+
+    Затем генерация csv-файлов:
+    >>> ./task.py -p /tmp/somedir -c csv
+
+    '''
+
     parser = argparse.ArgumentParser(
                 description="Архиватор и csv генератор.")
     parser.add_argument("-c", "--command", default="zip", type=str,
@@ -32,6 +41,10 @@ def main():
         os.mkdir(args.path)
         ArchGen(args.path, args.archcount, args.xmlcount).zip_all()
     elif args.command == "csv":
+        if not os.path.exists(args.path):
+            print("Directory {} doesn't exist. Run the script "
+                  "with --command=zip".format(args.path))
+            exit(1)
         csv = CsvGen(args.path)
         csv.gen_csv_files()
 
